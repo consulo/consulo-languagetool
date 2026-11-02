@@ -53,6 +53,13 @@
             <groupId>consulo.internal.org.languagetool</groupId>
             <artifactId>languagetool-core</artifactId>
             <version>${languagetool.version}</version>
+            <exclusions>
+                <!-- only reads n-gram indexes of older Lucene versions; the n-gram feature is not used -->
+                <exclusion>
+                    <groupId>org.apache.lucene</groupId>
+                    <artifactId>lucene-backward-codecs</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- American English (en-US) bundled in core plugin -->
@@ -252,11 +259,6 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-text</artifactId>
             <version>1.12.0</version>
-        </dependency>
-        <dependency>
-            <groupId>consulo.internal.org.apache.lucene</groupId>
-            <artifactId>lucene-backward-codecs</artifactId>
-            <version>5.5.5.1</version>
         </dependency>
         <dependency>
             <groupId>org.apache.lucene</groupId>
