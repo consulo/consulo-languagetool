@@ -8,7 +8,6 @@
         embedded engine. Checks for typos in source code comments, string
         literals, and plain text files. American English (en-US) is bundled;
         other languages are provided by the localization plugins
-        (e.g. consulo.language.tool.spelling.ru from consulo-localize_ru).
     </description>
     <tags>
         <tag>editor.spelling</tag>
