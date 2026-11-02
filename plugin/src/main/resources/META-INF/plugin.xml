@@ -1,0 +1,16 @@
+<consulo-plugin url="https://github.com/consulo/consulo-language-tool-spelling">
+    <id>consulo.language.tool.spelling</id>
+    <name>LanguageTool Spellchecker</name>
+    <version>SNAPSHOT</version>
+    <vendor>consulo.io</vendor>
+    <description>
+        Integrates LanguageTool spell checking into Consulo IDE using an
+        embedded engine. Checks for typos in source code comments, string
+        literals, and plain text files. American English (en-US) is bundled;
+        other languages are provided by the localization plugins
+        (e.g. consulo.language.tool.spelling.ru from consulo-localize_ru).
+    </description>
+    <tags>
+        <tag>editor.spelling</tag>
+    </tags>
+</consulo-plugin>

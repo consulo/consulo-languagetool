@@ -1,0 +1,16 @@
+LanguageTool Spellchecker plugin for Consulo
+Copyright 2013-2026 consulo.io
+
+The plugin code is licensed under the Apache License, Version 2.0 (see LICENSE.txt).
+
+This plugin bundles LanguageTool (https://languagetool.org), as separate libraries
+(languagetool-core, language-en), licensed under the GNU Lesser General Public License, version 2.1 or later
+(see licenses/LanguageTool-LGPL-2.1.txt).
+
+Copyright (C) LanguageTool contributors.
+
+The bundled LanguageTool libraries are built from a fork with Consulo specific changes. Its source code is available at:
+https://github.com/consulo/languagetool
+
+LanguageTool depends on further libraries under their own licenses (e.g. morfologik-stemming, hunspell);
+see the LanguageTool repository for details.
