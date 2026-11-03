@@ -23,9 +23,12 @@ import consulo.component.persist.State;
 import consulo.component.persist.Storage;
 import jakarta.inject.Singleton;
 
+import org.jspecify.annotations.Nullable;
+
 import java.util.Collections;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Application-level settings of the LanguageTool spellchecker engine.
@@ -39,6 +42,10 @@ import java.util.TreeSet;
 @ServiceImpl
 public class LanguageToolSettings implements PersistentStateComponent<LanguageToolSettingsState> {
     private volatile Set<String> myLanguages = Set.of();
+    private volatile Set<String> myDisabledRules = Set.of();
+    private volatile Set<String> myEnabledRules = Set.of();
+
+    private final AtomicLong myModificationCount = new AtomicLong();
 
     /**
      * Codes of the selected languages, also of languages which are not installed now, so the selection survives reinstalling a plugin.
@@ -50,20 +57,67 @@ public class LanguageToolSettings implements PersistentStateComponent<LanguageTo
     }
 
     public void setLanguages(Set<String> languages) {
-        myLanguages = Collections.unmodifiableSet(new TreeSet<>(languages));
+        myLanguages = copy(languages);
+        myModificationCount.incrementAndGet();
+    }
+
+    /**
+     * @return rules turned off by the user, as {@code languageCode:ruleId}
+     */
+    public Set<String> getDisabledRules() {
+        return myDisabledRules;
+    }
+
+    /**
+     * @return rules which are off by default and turned on by the user, as {@code languageCode:ruleId}
+     */
+    public Set<String> getEnabledRules() {
+        return myEnabledRules;
+    }
+
+    public void setRules(Set<String> disabledRules, Set<String> enabledRules) {
+        myDisabledRules = copy(disabledRules);
+        myEnabledRules = copy(enabledRules);
+        myModificationCount.incrementAndGet();
+    }
+
+    public void disableRule(String rule) {
+        Set<String> disabled = new TreeSet<>(myDisabledRules);
+        disabled.add(rule);
+        Set<String> enabled = new TreeSet<>(myEnabledRules);
+        enabled.remove(rule);
+        setRules(disabled, enabled);
+    }
+
+    /**
+     * @return a counter which changes with every change of the options
+     */
+    public long getModificationCount() {
+        return myModificationCount.get();
     }
 
     @Override
     public LanguageToolSettingsState getState() {
         LanguageToolSettingsState state = new LanguageToolSettingsState();
-        Set<String> languages = myLanguages;
-        state.languages = languages.isEmpty() ? null : new TreeSet<>(languages);
+        state.languages = toState(myLanguages);
+        state.disabledRules = toState(myDisabledRules);
+        state.enabledRules = toState(myEnabledRules);
         return state;
     }
 
     @Override
     public void loadState(LanguageToolSettingsState state) {
-        Set<String> languages = state.languages;
-        setLanguages(languages == null ? Set.of() : languages);
+        myLanguages = copy(state.languages);
+        myDisabledRules = copy(state.disabledRules);
+        myEnabledRules = copy(state.enabledRules);
+        myModificationCount.incrementAndGet();
+    }
+
+    private static Set<String> copy(@Nullable Set<String> values) {
+        return values == null || values.isEmpty() ? Set.of() : Collections.unmodifiableSet(new TreeSet<>(values));
+    }
+
+    private static @Nullable Set<String> toState(Set<String> values) {
+        return values.isEmpty() ? null : new TreeSet<>(values);
     }
 }

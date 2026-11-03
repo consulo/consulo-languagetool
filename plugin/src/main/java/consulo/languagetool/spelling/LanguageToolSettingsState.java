@@ -31,4 +31,14 @@ public class LanguageToolSettingsState {
      * {@code null} or empty means all installed languages.
      */
     public @Nullable Set<String> languages;
+
+    /**
+     * Rules turned off by the user, as {@code languageCode:ruleId}.
+     */
+    public @Nullable Set<String> disabledRules;
+
+    /**
+     * Rules which are off by default and turned on by the user, as {@code languageCode:ruleId}.
+     */
+    public @Nullable Set<String> enabledRules;
 }

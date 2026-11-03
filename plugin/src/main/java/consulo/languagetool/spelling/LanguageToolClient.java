@@ -56,14 +56,16 @@ import java.util.Set;
 @Singleton
 public class LanguageToolClient implements Disposable {
     private final Application myApplication;
+    private final LanguageToolSettings mySettings;
 
     private volatile @Nullable LanguageToolRuntime myRuntime;
 
     private boolean myBrokersInstalled;
 
     @Inject
-    public LanguageToolClient(Application application) {
+    public LanguageToolClient(Application application, LanguageToolSettings settings) {
         myApplication = application;
+        mySettings = settings;
 
         application.getMessageBus().connect(this).subscribe(PluginActionListener.class, new PluginActionListener() {
             @Override
@@ -106,6 +108,17 @@ public class LanguageToolClient implements Disposable {
         return getRuntime().getLanguages();
     }
 
+    /**
+     * @return grammar and style rules of the language; loads the language when needed
+     */
+    public List<LanguageToolRuntime.RuleInfo> getRules(String languageCode) {
+        return getRuntime().getRules(languageCode);
+    }
+
+    public @Nullable String getRuleDescription(String languageCode, String ruleId) {
+        return getRuntime().getRuleDescription(languageCode, ruleId);
+    }
+
     public void clearCache() {
         LanguageToolRuntime runtime = myRuntime;
         if (runtime != null) {
@@ -122,7 +135,7 @@ public class LanguageToolClient implements Disposable {
             runtime = myRuntime;
             if (runtime == null) {
                 installBrokers();
-                runtime = new LanguageToolRuntime(getProviders());
+                runtime = new LanguageToolRuntime(getProviders(), mySettings);
                 myRuntime = runtime;
             }
             return runtime;
@@ -142,7 +155,7 @@ public class LanguageToolClient implements Disposable {
             if (previous == null || previous.hasSameProviders(providers)) {
                 return;
             }
-            runtime = new LanguageToolRuntime(providers);
+            runtime = new LanguageToolRuntime(providers, mySettings);
             myRuntime = runtime;
         }
 

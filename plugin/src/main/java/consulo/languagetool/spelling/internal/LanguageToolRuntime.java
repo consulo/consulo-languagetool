@@ -16,6 +16,7 @@
 package consulo.languagetool.spelling.internal;
 
 import consulo.languagetool.spelling.LanguageToolLanguageProvider;
+import consulo.languagetool.spelling.LanguageToolSettings;
 import consulo.logging.Logger;
 import org.jspecify.annotations.Nullable;
 import org.languagetool.JLanguageTool;
@@ -66,10 +67,17 @@ public class LanguageToolRuntime {
     /**
      * A grammar or style match in a checked text.
      */
-    public record TextMatch(boolean style, int from, int to, String message, List<String> suggestions, String ruleId) {
+    public record TextMatch(String language, boolean style, int from, int to, String message, List<String> suggestions, String ruleId) {
+    }
+
+    /**
+     * A grammar or style rule of a language, for the rule options.
+     */
+    public record RuleInfo(String id, String description, String category, boolean enabledByDefault) {
     }
 
     private final List<LanguageToolLanguageProvider> myProviders;
+    private final LanguageToolSettings mySettings;
     private final List<ClassLoader> myClassLoaders;
 
     /**
@@ -92,10 +100,16 @@ public class LanguageToolRuntime {
      */
     private final Map<String, @Nullable JLanguageTool> myGrammarTools = new HashMap<>();
 
+    /**
+     * Settings modification count the grammar tools were built for. Guarded by {@code this}.
+     */
+    private long myRulesModificationCount = -1;
+
     private boolean myDisposed;
 
-    public LanguageToolRuntime(List<LanguageToolLanguageProvider> providers) {
+    public LanguageToolRuntime(List<LanguageToolLanguageProvider> providers, LanguageToolSettings settings) {
         myProviders = List.copyOf(providers);
+        mySettings = settings;
 
         Set<ClassLoader> classLoaders = new LinkedHashSet<>();
         for (LanguageToolLanguageProvider provider : myProviders) {
@@ -231,8 +245,18 @@ public class LanguageToolRuntime {
      * @param languages codes of the checked languages, empty for all installed languages
      */
     public synchronized List<TextMatch> checkText(String text, Set<String> languages) {
+        long modificationCount = mySettings.getModificationCount();
+        if (modificationCount != myRulesModificationCount) {
+            // enabled and disabled rules are applied when a grammar tool is created
+            myGrammarTools.clear();
+            myRulesModificationCount = modificationCount;
+        }
+
         String code = detectLanguage(text, getCheckedCodes(languages));
-        JLanguageTool tool = code == null ? null : getOrCreateGrammarTool(code);
+        if (code == null) {
+            return List.of();
+        }
+        JLanguageTool tool = getOrCreateGrammarTool(code);
         if (tool == null) {
             return List.of();
         }
@@ -247,6 +271,7 @@ public class LanguageToolRuntime {
                 }
                 List<String> suggestions = match.getSuggestedReplacements();
                 result.add(new TextMatch(
+                    code,
                     isStyleLike(rule),
                     match.getFromPos(),
                     match.getToPos(),
@@ -275,6 +300,41 @@ public class LanguageToolRuntime {
             }
         }
         return codes.isEmpty() ? installed.keySet() : codes;
+    }
+
+    /**
+     * @return grammar and style rules of the language, without spelling rules; loads the language when needed
+     */
+    public synchronized List<RuleInfo> getRules(String code) {
+        JLanguageTool tool = getOrCreateGrammarTool(code);
+        if (tool == null) {
+            return List.of();
+        }
+        Map<String, RuleInfo> rules = new LinkedHashMap<>();
+        for (Rule rule : tool.getAllRules()) {
+            if (rule instanceof SpellingCheckRule || rules.containsKey(rule.getId())) {
+                continue;
+            }
+            boolean enabledByDefault = !rule.isDefaultOff() && !rule.getCategory().isDefaultOff() && !rule.hasTag(Tag.picky);
+            rules.put(rule.getId(), new RuleInfo(rule.getId(), rule.getDescription(), rule.getCategory().getName(), enabledByDefault));
+        }
+        return List.copyOf(rules.values());
+    }
+
+    /**
+     * @return the description of a rule of an already loaded language
+     */
+    public synchronized @Nullable String getRuleDescription(String code, String ruleId) {
+        JLanguageTool tool = myGrammarTools.get(code);
+        if (tool == null) {
+            return null;
+        }
+        for (Rule rule : tool.getAllRules()) {
+            if (rule.getId().equals(ruleId)) {
+                return rule.getDescription();
+            }
+        }
+        return null;
     }
 
     private static boolean isStyleLike(Rule rule) {
@@ -330,6 +390,17 @@ public class LanguageToolRuntime {
                 for (Rule rule : tool.getAllActiveRules()) {
                     if (rule.hasTag(Tag.picky)) {
                         tool.disableRule(rule.getId());
+                    }
+                }
+                String prefix = code + ":";
+                for (String rule : mySettings.getEnabledRules()) {
+                    if (rule.startsWith(prefix)) {
+                        tool.enableRule(rule.substring(prefix.length()));
+                    }
+                }
+                for (String rule : mySettings.getDisabledRules()) {
+                    if (rule.startsWith(prefix)) {
+                        tool.disableRule(rule.substring(prefix.length()));
                     }
                 }
                 LOG.info("LanguageTool grammar ready for: " + code);

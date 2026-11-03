@@ -6,3 +6,7 @@ settings.languages.all:
     text: ALL
 settings.language.not.installed:
     text: '{0} (not installed)'
+settings.rules.label:
+    text: 'Rules:'
+settings.rules.loading:
+    text: Loading rules...

@@ -96,7 +96,7 @@ public class LanguageToolSpellcheckerEngine implements SpellcheckerEngine {
                 new TextRange(match.from(), match.to()),
                 LocalizeValue.of(match.message()),
                 match.suggestions(),
-                match.ruleId()
+                match.language() + ":" + match.ruleId()
             ));
         }
         return problems;
@@ -115,6 +115,26 @@ public class LanguageToolSpellcheckerEngine implements SpellcheckerEngine {
     @Override
     public List<String> getSuggestions(Project project, String word) {
         return myClient.getSuggestions(word, mySettings.getLanguages());
+    }
+
+    @Override
+    public LocalizeValue getRuleDisplayName(String ruleId) {
+        int separator = ruleId.indexOf(':');
+        if (separator < 0) {
+            return LocalizeValue.empty();
+        }
+        String description = myClient.getRuleDescription(ruleId.substring(0, separator), ruleId.substring(separator + 1));
+        return description == null ? LocalizeValue.empty() : LocalizeValue.of(description);
+    }
+
+    @Override
+    public void disableRule(String ruleId) {
+        mySettings.disableRule(ruleId);
+    }
+
+    @Override
+    public long getModificationCount() {
+        return mySettings.getModificationCount();
     }
 
     @Override
