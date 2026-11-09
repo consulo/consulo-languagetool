@@ -15,6 +15,9 @@
  */
 package consulo.languagetool.spelling.internal;
 
+import consulo.application.progress.ProgressIndicator;
+import consulo.application.progress.ProgressManager;
+import consulo.component.ProcessCanceledException;
 import consulo.languagetool.spelling.LanguageToolLanguageProvider;
 import consulo.languagetool.spelling.LanguageToolSettings;
 import consulo.logging.Logger;
@@ -39,13 +42,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * All LanguageTool state built for one set of installed language plugins: languages, spellers, grammar tools and the word cache.
  * <p>
  * When the providers change, the client builds a new instance and {@link #dispose() disposes} this one.
  * <p>
- * {@link JLanguageTool} is not thread-safe, so all checks are serialised.
+ * {@link JLanguageTool} is not thread-safe, so all checks are serialised. Checks run inside read actions, so a waiting check and a
+ * running grammar check stop when their progress is canceled, otherwise a pending write action waits for every queued check.
  *
  * @author VISTALL
  * @since 2026-11-02
@@ -80,8 +86,10 @@ public class LanguageToolRuntime {
     private final LanguageToolSettings mySettings;
     private final List<ClassLoader> myClassLoaders;
 
+    private final ReentrantLock myLock = new ReentrantLock();
+
     /**
-     * Installed languages by code, created on first use. Guarded by {@code this}.
+     * Installed languages by code, created on first use. Guarded by {@link #myLock}.
      */
     private @Nullable Map<String, Language> myLanguages;
 
@@ -91,17 +99,22 @@ public class LanguageToolRuntime {
     private final Map<String, CheckResult> myCache = new ConcurrentHashMap<>();
 
     /**
-     * One speller per language code; {@code null} when the language has no speller. Guarded by {@code this}.
+     * One speller per language code; {@code null} when the language has no speller. Guarded by {@link #myLock}.
      */
     private final Map<String, @Nullable SpellerTool> myTools = new HashMap<>();
 
     /**
-     * One grammar tool per language code (spelling and picky rules disabled); {@code null} when not available. Guarded by {@code this}.
+     * One grammar tool per language code (spelling and picky rules disabled); {@code null} when not available. Guarded by {@link #myLock}.
      */
     private final Map<String, @Nullable JLanguageTool> myGrammarTools = new HashMap<>();
 
     /**
-     * Settings modification count the grammar tools were built for. Guarded by {@code this}.
+     * Rule descriptions by language code and rule id, of the grammar tools created so far.
+     */
+    private final Map<String, Map<String, String>> myRuleDescriptions = new ConcurrentHashMap<>();
+
+    /**
+     * Settings modification count the grammar tools were built for. Guarded by {@link #myLock}.
      */
     private long myRulesModificationCount = -1;
 
@@ -140,13 +153,25 @@ public class LanguageToolRuntime {
     /**
      * @return languages created by this runtime so far, without creating them
      */
-    public synchronized List<Language> getLoadedLanguages() {
-        Map<String, Language> languages = myLanguages;
-        return languages == null ? List.of() : List.copyOf(languages.values());
+    public List<Language> getLoadedLanguages() {
+        myLock.lock();
+        try {
+            Map<String, Language> languages = myLanguages;
+            return languages == null ? List.of() : List.copyOf(languages.values());
+        }
+        finally {
+            myLock.unlock();
+        }
     }
 
-    public synchronized List<Language> getLanguages() {
-        return List.copyOf(getLanguageMap().values());
+    public List<Language> getLanguages() {
+        myLock.lock();
+        try {
+            return List.copyOf(getLanguageMap().values());
+        }
+        finally {
+            myLock.unlock();
+        }
     }
 
     /**
@@ -170,12 +195,19 @@ public class LanguageToolRuntime {
     /**
      * Releases all LanguageTool objects. Waits for a running check; later calls find no languages.
      */
-    public synchronized void dispose() {
-        myDisposed = true;
-        myCache.clear();
-        myTools.clear();
-        myGrammarTools.clear();
-        myLanguages = Map.of();
+    public void dispose() {
+        myLock.lock();
+        try {
+            myDisposed = true;
+            myCache.clear();
+            myTools.clear();
+            myGrammarTools.clear();
+            myRuleDescriptions.clear();
+            myLanguages = Map.of();
+        }
+        finally {
+            myLock.unlock();
+        }
     }
 
     private CheckResult getOrCheck(String word, Set<String> languages) {
@@ -187,15 +219,50 @@ public class LanguageToolRuntime {
         return performCheck(key, word, languages);
     }
 
-    private synchronized CheckResult performCheck(String key, String word, Set<String> languages) {
-        CheckResult result = check(word, languages);
-        if (!myDisposed) {
-            if (myCache.size() >= MAX_CACHE_SIZE) {
-                myCache.clear();
+    private CheckResult performCheck(String key, String word, Set<String> languages) {
+        lockCancelable();
+        try {
+            CheckResult result = myCache.get(key);
+            if (result != null) {
+                return result;
             }
-            myCache.put(key, result);
+            result = check(word, languages);
+            if (!myDisposed) {
+                if (myCache.size() >= MAX_CACHE_SIZE) {
+                    myCache.clear();
+                }
+                myCache.put(key, result);
+            }
+            return result;
         }
-        return result;
+        finally {
+            myLock.unlock();
+        }
+    }
+
+    /**
+     * Waits for the lock while the current progress is not canceled.
+     *
+     * @throws ProcessCanceledException when the progress is canceled before the lock is taken
+     */
+    private void lockCancelable() {
+        while (true) {
+            ProgressManager.checkCanceled();
+            try {
+                if (myLock.tryLock(10, TimeUnit.MILLISECONDS)) {
+                    return;
+                }
+            }
+            catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ProcessCanceledException(e);
+            }
+        }
+    }
+
+    private static boolean isCanceled() {
+        ProgressIndicator indicator = ProgressManager.getInstance().getProgressIndicator();
+        return indicator != null && indicator.isCanceled();
     }
 
     /**
@@ -244,7 +311,17 @@ public class LanguageToolRuntime {
      *
      * @param languages codes of the checked languages, empty for all installed languages
      */
-    public synchronized List<TextMatch> checkText(String text, Set<String> languages) {
+    public List<TextMatch> checkText(String text, Set<String> languages) {
+        lockCancelable();
+        try {
+            return doCheckText(text, languages);
+        }
+        finally {
+            myLock.unlock();
+        }
+    }
+
+    private List<TextMatch> doCheckText(String text, Set<String> languages) {
         long modificationCount = mySettings.getModificationCount();
         if (modificationCount != myRulesModificationCount) {
             // enabled and disabled rules are applied when a grammar tool is created
@@ -262,8 +339,11 @@ public class LanguageToolRuntime {
         }
 
         try {
+            List<RuleMatch> matches = tool.check(text);
+            ProgressManager.checkCanceled();
+
             List<TextMatch> result = new ArrayList<>();
-            for (RuleMatch match : tool.check(text)) {
+            for (RuleMatch match : matches) {
                 Rule rule = match.getRule();
                 String message = match.getShortMessage();
                 if (message == null || message.isEmpty()) {
@@ -305,36 +385,34 @@ public class LanguageToolRuntime {
     /**
      * @return grammar and style rules of the language, without spelling rules; loads the language when needed
      */
-    public synchronized List<RuleInfo> getRules(String code) {
-        JLanguageTool tool = getOrCreateGrammarTool(code);
-        if (tool == null) {
-            return List.of();
-        }
-        Map<String, RuleInfo> rules = new LinkedHashMap<>();
-        for (Rule rule : tool.getAllRules()) {
-            if (rule instanceof SpellingCheckRule || rules.containsKey(rule.getId())) {
-                continue;
+    public List<RuleInfo> getRules(String code) {
+        myLock.lock();
+        try {
+            JLanguageTool tool = getOrCreateGrammarTool(code);
+            if (tool == null) {
+                return List.of();
             }
-            boolean enabledByDefault = !rule.isDefaultOff() && !rule.getCategory().isDefaultOff() && !rule.hasTag(Tag.picky);
-            rules.put(rule.getId(), new RuleInfo(rule.getId(), rule.getDescription(), rule.getCategory().getName(), enabledByDefault));
+            Map<String, RuleInfo> rules = new LinkedHashMap<>();
+            for (Rule rule : tool.getAllRules()) {
+                if (rule instanceof SpellingCheckRule || rules.containsKey(rule.getId())) {
+                    continue;
+                }
+                boolean enabledByDefault = !rule.isDefaultOff() && !rule.getCategory().isDefaultOff() && !rule.hasTag(Tag.picky);
+                rules.put(rule.getId(), new RuleInfo(rule.getId(), rule.getDescription(), rule.getCategory().getName(), enabledByDefault));
+            }
+            return List.copyOf(rules.values());
         }
-        return List.copyOf(rules.values());
+        finally {
+            myLock.unlock();
+        }
     }
 
     /**
      * @return the description of a rule of an already loaded language
      */
-    public synchronized @Nullable String getRuleDescription(String code, String ruleId) {
-        JLanguageTool tool = myGrammarTools.get(code);
-        if (tool == null) {
-            return null;
-        }
-        for (Rule rule : tool.getAllRules()) {
-            if (rule.getId().equals(ruleId)) {
-                return rule.getDescription();
-            }
-        }
-        return null;
+    public @Nullable String getRuleDescription(String code, String ruleId) {
+        Map<String, String> descriptions = myRuleDescriptions.get(code);
+        return descriptions == null ? null : descriptions.get(ruleId);
     }
 
     private static boolean isStyleLike(Rule rule) {
@@ -383,6 +461,7 @@ public class LanguageToolRuntime {
         if (language != null) {
             try {
                 tool = new JLanguageTool(language);
+                tool.setCheckCancelledCallback(LanguageToolRuntime::isCanceled);
                 // spelling is checked per word by the speller; picky rules are too noisy for code
                 for (Rule rule : tool.getAllSpellingCheckRules()) {
                     tool.disableRule(rule.getId());
@@ -412,6 +491,16 @@ public class LanguageToolRuntime {
         }
         if (!myDisposed) {
             myGrammarTools.put(code, tool);
+            if (tool != null && !myRuleDescriptions.containsKey(code)) {
+                Map<String, String> descriptions = new HashMap<>();
+                for (Rule rule : tool.getAllRules()) {
+                    String description = rule.getDescription();
+                    if (description != null) {
+                        descriptions.putIfAbsent(rule.getId(), description);
+                    }
+                }
+                myRuleDescriptions.put(code, Map.copyOf(descriptions));
+            }
         }
         return tool;
     }
